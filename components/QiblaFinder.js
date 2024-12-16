@@ -1,174 +1,244 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  Compass, 
-  MapPin, 
-  Navigation, 
-  Target 
-} from 'lucide-react';
+import { Compass, MapPin } from 'lucide-react';
+
+// Haversine and Bearing calculation functions (kept from previous implementation)
+const haversineDistance = (lat1, lon1, lat2, lon2) => {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = 
+    Math.sin(dLat/2) * Math.sin(dLat/2) +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+    Math.sin(dLon/2) * Math.sin(dLon/2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  return R * c;
+};
+
+const calculateBearing = (lat1, lon1, lat2, lon2) => {
+  const φ1 = lat1 * Math.PI / 180;
+  const φ2 = lat2 * Math.PI / 180;
+  const Δλ = (lon2 - lon1) * Math.PI / 180;
+
+  const y = Math.sin(Δλ) * Math.cos(φ2);
+  const x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ);
+  let θ = Math.atan2(y, x);
+  
+  const bearing = (θ * 180 / Math.PI + 360) % 360;
+  return bearing;
+};
 
 const QiblaFinder = () => {
   const [location, setLocation] = useState(null);
   const [qiblaDirection, setQiblaDirection] = useState(null);
-  const [compassHeading, setCompassHeading] = useState(0);
-  const [accuracy, setAccuracy] = useState(null);
+  const [compassHeading, setCompassHeading] = useState(null);
+  const [error, setError] = useState(null);
 
-  // Mecca coordinates (fixed reference point)
-  const MECCA_LATITUDE = 21.4225;
-  const MECCA_LONGITUDE = 39.8262;
+  // Coordinates of the Kaaba in Mecca
+  const KAABA_LAT = 21.4225;
+  const KAABA_LON = 39.8262;
 
-  // Calculate Qibla direction using spherical trigonometry
-  const calculateQiblaDirection = (lat1, lon1) => {
-    const lat1Rad = lat1 * (Math.PI / 180);
-    const lon1Rad = lon1 * (Math.PI / 180);
-    const mechaLatRad = MECCA_LATITUDE * (Math.PI / 180);
-    const mechaLonRad = MECCA_LONGITUDE * (Math.PI / 180);
-
-    const y = Math.sin(mechaLonRad - lon1Rad) * Math.cos(mechaLatRad);
-    const x = Math.cos(lat1Rad) * Math.sin(mechaLatRad) - 
-              Math.sin(lat1Rad) * Math.cos(mechaLatRad) * 
-              Math.cos(mechaLonRad - lon1Rad);
-    
-    let bearingRad = Math.atan2(y, x);
-    let bearingDeg = bearingRad * (180 / Math.PI);
-    
-    // Normalize to 0-360 degrees
-    bearingDeg = (bearingDeg + 360) % 360;
-    return bearingDeg;
-  };
-
-  // Request location permission and set up compass tracking
+  // Geolocation and orientation effects (kept from previous implementation)
   useEffect(() => {
-    const requestLocationAndCompass = async () => {
-      try {
-        // Request location
-        const position = await new Promise((resolve, reject) => {
-          navigator.geolocation.getCurrentPosition(resolve, reject, {
-            enableHighAccuracy: true,
-            timeout: 5000,
-            maximumAge: 0
-          });
-        });
+    if ('geolocation' in navigator) {
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          const { latitude, longitude } = position.coords;
+          setLocation({ latitude, longitude });
 
-        const { latitude, longitude, accuracy } = position.coords;
-        setLocation({ latitude, longitude });
-        setAccuracy(accuracy);
-
-        // Calculate Qibla direction
-        const direction = calculateQiblaDirection(latitude, longitude);
-        setQiblaDirection(direction);
-
-        // Set up compass tracking
-        if ('DeviceOrientationEvent' in window) {
-          window.addEventListener('deviceorientationabsolute', handleOrientation, false);
+          const direction = calculateBearing(
+            latitude, 
+            longitude, 
+            KAABA_LAT, 
+            KAABA_LON
+          );
+          setQiblaDirection(direction);
+        },
+        (err) => {
+          setError('Unable to retrieve location: ' + err.message);
         }
-      } catch (error) {
-        console.error("Location access denied:", error);
-      }
+      );
+    } else {
+      setError('Geolocation is not supported by your browser');
+    }
+  }, []);
+
+  useEffect(() => {
+    const handleOrientation = (event) => {
+      const heading = event.webkitCompassHeading || 
+                      event.compassHeading || 
+                      360 - event.alpha;
+      
+      setCompassHeading(heading);
     };
 
-    requestLocationAndCompass();
+    window.addEventListener('deviceorientation', handleOrientation);
 
     return () => {
-      window.removeEventListener('deviceorientationabsolute', handleOrientation);
+      window.removeEventListener('deviceorientation', handleOrientation);
     };
   }, []);
 
-  // Handle device orientation
-  const handleOrientation = (event) => {
-    let heading;
-    if (event.webkitCompassHeading) {
-      // iOS
-      heading = event.webkitCompassHeading;
-    } else if (event.absolute && event.alpha !== null) {
-      // Android and others
-      heading = 360 - event.alpha;
-    }
+  // Calculate angle difference for Qibla alignment
+  const getQiblaAngleDifference = () => {
+    if (!qiblaDirection || compassHeading === null) return null;
     
-    setCompassHeading(heading);
+    let difference = qiblaDirection - compassHeading;
+    difference = (difference + 360) % 360;
+    
+    return difference;
   };
 
-  // Compass component
-  const CompassDisplay = () => {
-    const rotationAngle = qiblaDirection ? 
-      (360 - compassHeading + qiblaDirection) % 360 : 
-      0;
-
-    return (
-      <div className="relative w-64 h-64 mx-auto">
-        {/* Compass background circle */}
-        <div className="absolute inset-0 bg-gray-100 rounded-full border-4 border-gray-300 shadow-lg"></div>
-        
-        {/* Compass dial */}
-        <div 
-          className="absolute inset-0 transition-transform duration-200 ease-out"
-          style={{ transform: `rotate(${rotationAngle}deg)` }}
-        >
-          {/* Qibla direction indicator */}
-          <div className="absolute top-0 left-1/2 -translate-x-1/2 w-2 h-1/2 bg-green-500 z-10"></div>
-          
-          {/* Compass markings */}
-          {['N', 'E', 'S', 'W'].map((direction, index) => (
-            <div 
-              key={direction} 
-              className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-gray-600"
-              style={{ 
-                transform: `rotate(${index * 90}deg) translate(0, -120px) rotate(-${index * 90}deg)` 
-              }}
-            >
-              {direction}
-            </div>
-          ))}
-        </div>
-      </div>
-    );
+  // Calculate distance to Kaaba
+  const getDistanceToKaaba = () => {
+    if (!location) return null;
+    
+    return haversineDistance(
+      location.latitude, 
+      location.longitude, 
+      KAABA_LAT, 
+      KAABA_LON
+    ).toFixed(2);
   };
+
+  // Detailed compass directions with precise positioning
+  const compassDirections = [
+    { label: 'N', degree: 0, color: 'text-red-600 font-bold' },
+    { label: 'NE', degree: 45, color: 'text-gray-700' },
+    { label: 'E', degree: 90, color: 'text-gray-700' },
+    { label: 'SE', degree: 135, color: 'text-gray-700' },
+    { label: 'S', degree: 180, color: 'text-gray-700' },
+    { label: 'SW', degree: 225, color: 'text-gray-700' },
+    { label: 'W', degree: 270, color: 'text-gray-700' },
+    { label: 'NW', degree: 315, color: 'text-gray-700' }
+  ];
 
   return (
-    <div className="max-w-md mx-auto p-4 bg-white rounded-lg shadow-xl">
-      <h1 className="text-2xl font-bold mb-4 text-center flex items-center justify-center">
+    <div className="max-w-md mx-auto p-4 bg-white shadow-lg rounded-lg">
+      <h1 className="text-xl font-bold mb-4 text-center flex items-center justify-center">
         <Compass className="mr-2" /> Qibla Finder
       </h1>
-      
-      {/* Compass Display */}
-      <CompassDisplay />
-      
-      {/* Location and Qibla Information */}
-      <div className="mt-4 text-center">
-        <div className="grid grid-cols-2 gap-2 text-sm">
-          <div className="flex items-center justify-center">
-            <MapPin className="mr-1 text-blue-500" size={16} />
-            <span>
-              {location 
-                ? `Lat: ${location.latitude.toFixed(4)}° 
-                   Lon: ${location.longitude.toFixed(4)}°`
-                : 'Locating...'}
-            </span>
-          </div>
-          
-          <div className="flex items-center justify-center">
-            <Navigation className="mr-1 text-green-500" size={16} />
-            <span>
-              {qiblaDirection 
-                ? `${qiblaDirection.toFixed(2)}°` 
-                : 'Calculating...'}
-            </span>
-          </div>
-          
-          <div className="flex items-center justify-center">
-            <Target className="mr-1 text-red-500" size={16} />
-            <span>
-              {accuracy 
-                ? `Accuracy: ${accuracy.toFixed(0)}m` 
-                : 'Checking...'}
-            </span>
-          </div>
+
+      {error && (
+        <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-2 rounded text-sm">
+          {error}
         </div>
-      </div>
-      
-      {/* Disclaimer */}
-      <p className="text-xs text-gray-500 mt-2 text-center">
-        Ensure location services are enabled for accurate results
-      </p>
+      )}
+
+      {location && (
+        <div className="space-y-3">
+          {/* Enhanced Circular Compass */}
+          <div className="relative w-64 h-64 mx-auto">
+            {/* Outer Ring */}
+            <div className="absolute inset-0 rounded-full border-8 border-gray-200 shadow-lg" />
+            
+            {/* Inner Precise Markings */}
+            <div className="absolute inset-4 rounded-full border-2 border-gray-300" />
+            
+            {/* Degree Markings */}
+            {[...Array(36)].map((_, i) => {
+              const degree = i * 10;
+              return (
+                <div 
+                  key={degree}
+                  className="absolute w-full h-full flex items-center justify-center"
+                  style={{
+                    transform: `rotate(${degree}deg)`,
+                    transformOrigin: 'center'
+                  }}
+                >
+                  <div 
+                    className={`w-0.5 ${degree % 30 === 0 ? 'h-3 bg-gray-600' : 'h-1.5 bg-gray-400'}`}
+                  />
+                </div>
+              );
+            })}
+
+            {/* Compass Directions */}
+            {compassDirections.map((dir) => (
+              <div 
+                key={dir.label}
+                className="absolute w-full h-full flex items-center justify-center"
+                style={{
+                  transform: `rotate(${dir.degree}deg)`,
+                  transformOrigin: 'center'
+                }}
+              >
+                <span 
+                  className={`text-xs font-semibold ${dir.color}`}
+                  style={{
+                    transform: `rotate(-${dir.degree}deg) translate(0, -4.5rem)`
+                  }}
+                >
+                  {dir.label}
+                </span>
+              </div>
+            ))}
+
+            {/* Qibla Indicator */}
+            {qiblaDirection !== null && compassHeading !== null && (
+              <div 
+                className="absolute inset-0 pointer-events-none"
+                style={{
+                  transform: `rotate(${-compassHeading}deg)`,
+                  transformOrigin: 'center'
+                }}
+              >
+                {/* Qibla Arrow */}
+                <div 
+                  className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 
+                             w-1 h-28 bg-green-500 origin-bottom rounded-full"
+                  style={{
+                    transform: `rotate(${qiblaDirection}deg)`,
+                  }}
+                />
+                {/* Pivot Point */}
+                <div 
+                  className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 
+                             w-3 h-3 bg-green-600 rounded-full"
+                />
+              </div>
+            )}
+          </div>
+
+          {/* Compact Information Panels */}
+          <div className="grid grid-cols-3 gap-2 text-xs">
+            <div className="bg-blue-50 p-2 rounded-lg text-center">
+              <div className="flex items-center justify-center mb-1">
+                <MapPin className="w-3 h-3 mr-1" />
+                <span>Latitude</span>
+              </div>
+              <p>{location.latitude.toFixed(4)}°</p>
+            </div>
+
+            <div className="bg-green-50 p-2 rounded-lg text-center">
+              <div className="flex items-center justify-center mb-1">
+                <Compass className="w-3 h-3 mr-1" />
+                <span>Qibla</span>
+              </div>
+              <p>{qiblaDirection ? `${qiblaDirection.toFixed(2)}°` : '—'}</p>
+            </div>
+
+            <div className="bg-yellow-50 p-2 rounded-lg text-center">
+              <div className="flex items-center justify-center mb-1">
+                <span className="mr-1">🕋</span>
+                <span>Distance</span>
+              </div>
+              <p>{getDistanceToKaaba() ? `${getDistanceToKaaba()} km` : '—'}</p>
+            </div>
+          </div>
+
+          {/* Alignment Indicator */}
+          {compassHeading !== null && qiblaDirection !== null && (
+            <div className="bg-gray-100 p-2 rounded-lg text-center text-xs">
+              Alignment: {Math.abs(getQiblaAngleDifference()).toFixed(2)}° from Qibla
+            </div>
+          )}
+        </div>
+      )}
+
+      {!location && !error && (
+        <div className="text-center text-sm">Loading location...</div>
+      )}
     </div>
   );
 };
